@@ -27,12 +27,13 @@ jobs:
       - name: Download OBS development files
         shell: pwsh
         run: |
-          $version = "30.1.2"
-          $url = "https://github.com/obsproject/obs-studio/releases/download/${version}/obs-studio-${version}-windows-x64.zip"
-          Write-Host "Downloading OBS $version..."
+          $version = "32.1.2"
+          $url = "https://github.com/obsproject/obs-studio/releases/download/${version}/OBS-Studio-${version}-Windows-x64.zip"
+          Write-Host "Downloading OBS $version from $url ..."
           Invoke-WebRequest -Uri $url -OutFile obs.zip
           Expand-Archive obs.zip -DestinationPath obs-studio
-          Write-Host "OBS extracted."
+          Write-Host "OBS extracted. Contents:"
+          Get-ChildItem obs-studio -Recurse -Filter "*.cmake" | Select-Object FullName
 
       # ----------------------------------------------------------------
       # 3. Configure with CMake (point at the extracted OBS)
@@ -40,15 +41,26 @@ jobs:
       - name: Configure CMake
         shell: pwsh
         run: |
-          # Find where CMake config landed inside the extracted zip
-          $cmake_dir = Get-ChildItem -Recurse -Filter "libobsConfig.cmake" `
-                         obs-studio | Select-Object -First 1 | Split-Path
+          # OBS 32.x ships cmake configs under cmake/libobs/
+          $cmake_file = Get-ChildItem -Recurse -Filter "libobsConfig.cmake" obs-studio `
+                        | Select-Object -First 1
+          if (-not $cmake_file) {
+            Write-Error "Could not find libobsConfig.cmake inside extracted OBS zip"
+            exit 1
+          }
+          $cmake_dir = $cmake_file.DirectoryName
           Write-Host "libobs cmake dir: $cmake_dir"
+
+          # Also find the OBS include root (contains obs-module.h)
+          $obs_include = Get-ChildItem -Recurse -Filter "obs-module.h" obs-studio `
+                         | Select-Object -First 1 | Split-Path
+          Write-Host "OBS include dir: $obs_include"
 
           cmake -B build -S . `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -Dlibobs_DIR="$cmake_dir"
+            -Dlibobs_DIR="$cmake_dir" `
+            -DOBS_INCLUDE_DIR="$obs_include"
 
       # ----------------------------------------------------------------
       # 4. Build
