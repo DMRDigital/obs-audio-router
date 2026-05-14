@@ -21,33 +21,41 @@ jobs:
         uses: actions/checkout@v4
 
       # ----------------------------------------------------------------
-      # 2. Download OBS Studio Windows zip (contains headers + obs.lib)
+      # 2. Clone OBS source for headers (shallow, no submodules)
+      #    We only need the headers from libobs/ — not the full build
       # ----------------------------------------------------------------
-      - name: Download OBS development files
+      - name: Get OBS headers
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 32.1.2 `
+            https://github.com/obsproject/obs-studio.git obs-src
+          Write-Host "OBS source cloned."
+          Write-Host "libobs contents:"
+          Get-ChildItem obs-src/libobs | Select-Object Name
+
+      # ----------------------------------------------------------------
+      # 3. Download the OBS Windows zip to get obs.lib
+      # ----------------------------------------------------------------
+      - name: Download OBS Windows zip (for obs.lib)
         shell: pwsh
         run: |
           $version = "32.1.2"
           $url = "https://github.com/obsproject/obs-studio/releases/download/${version}/OBS-Studio-${version}-Windows-x64.zip"
-          Write-Host "Downloading OBS $version ..."
           Invoke-WebRequest -Uri $url -OutFile obs.zip
-          Expand-Archive obs.zip -DestinationPath obs-studio
-          Write-Host "Extracted. Listing all files:"
-          Get-ChildItem obs-studio -Recurse | Select-Object FullName
+          Expand-Archive obs.zip -DestinationPath obs-bin
+          Write-Host "OBS bin extracted. Looking for obs.lib:"
+          Get-ChildItem -Recurse -Filter "obs.lib" obs-bin | Select-Object FullName
 
       # ----------------------------------------------------------------
-      # 3. Configure CMake — find headers and obs.lib from extracted zip
+      # 4. Configure CMake
       # ----------------------------------------------------------------
       - name: Configure CMake
         shell: pwsh
         run: |
-          # Find obs-module.h — its parent is our include root
-          $h = Get-ChildItem -Recurse -Filter "obs-module.h" obs-studio | Select-Object -First 1
-          if (-not $h) { Write-Error "obs-module.h not found in OBS zip"; exit 1 }
-          $obs_include = $h.DirectoryName
-          Write-Host "Include dir: $obs_include"
+          $obs_include = "${{ github.workspace }}\obs-src\libobs"
+          Write-Host "OBS include dir: $obs_include"
 
-          # Find obs.lib
-          $lib = Get-ChildItem -Recurse -Filter "obs.lib" obs-studio | Select-Object -First 1
+          $lib = Get-ChildItem -Recurse -Filter "obs.lib" obs-bin | Select-Object -First 1
           $obs_lib = if ($lib) { $lib.FullName } else { "" }
           Write-Host "obs.lib: $obs_lib"
 
@@ -58,13 +66,13 @@ jobs:
             -DOBS_LIB_PATH="$obs_lib"
 
       # ----------------------------------------------------------------
-      # 4. Build
+      # 5. Build
       # ----------------------------------------------------------------
       - name: Build
         run: cmake --build build --config Release --parallel
 
       # ----------------------------------------------------------------
-      # 5. Package the DLL
+      # 6. Package
       # ----------------------------------------------------------------
       - name: Package
         shell: pwsh
@@ -77,7 +85,7 @@ jobs:
           Write-Host "Package created."
 
       # ----------------------------------------------------------------
-      # 6. Upload artifact
+      # 7. Upload artifact
       # ----------------------------------------------------------------
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -87,7 +95,7 @@ jobs:
           retention-days: 30
 
       # ----------------------------------------------------------------
-      # 7. Create GitHub Release on version tags
+      # 8. Create GitHub Release on version tags
       # ----------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
