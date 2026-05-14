@@ -14,28 +14,39 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # ----------------------------------------------------------------
-      # 1. Checkout plugin source
-      # ----------------------------------------------------------------
       - name: Checkout plugin
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------------------
-      # 2. Clone OBS source for headers (shallow, no submodules)
-      #    We only need the headers from libobs/ — not the full build
-      # ----------------------------------------------------------------
       - name: Get OBS headers
         shell: pwsh
         run: |
           git clone --depth 1 --branch 32.1.2 `
             https://github.com/obsproject/obs-studio.git obs-src
           Write-Host "OBS source cloned."
-          Write-Host "libobs contents:"
-          Get-ChildItem obs-src/libobs | Select-Object Name
 
-      # ----------------------------------------------------------------
-      # 3. Download the OBS Windows zip to get obs.lib
-      # ----------------------------------------------------------------
+      - name: Generate obsconfig.h
+        shell: pwsh
+        run: |
+          # obsconfig.h is normally produced by OBS's own CMake build.
+          # We generate a minimal version that satisfies plugin compilation.
+          $content = @"
+          #pragma once
+          #define OBS_VERSION "32.1.2"
+          #define OBS_VERSION_MAJOR 32
+          #define OBS_VERSION_MINOR 1
+          #define OBS_VERSION_PATCH 2
+          #define LIBOBS_API_MAJOR_VER 32
+          #define LIBOBS_API_MINOR_VER 1
+          #define LIBOBS_API_PATCH_VER 2
+          #define LIBOBS_API_VER ((LIBOBS_API_MAJOR_VER << 24) | (LIBOBS_API_MINOR_VER << 16) | LIBOBS_API_PATCH_VER)
+          #define OBS_INSTALL_PREFIX ""
+          #define OBS_INSTALL_DATA_PATH "../../data"
+          #define OBS_INSTALL_PLUGIN_PATH "../../obs-plugins"
+          "@
+          # Write next to obs-config.h so the relative include works
+          $content | Set-Content obs-src\libobs\obsconfig.h -Encoding UTF8
+          Write-Host "obsconfig.h written to obs-src\libobs\obsconfig.h"
+
       - name: Download OBS Windows zip (for obs.lib)
         shell: pwsh
         run: |
@@ -46,9 +57,6 @@ jobs:
           Write-Host "OBS bin extracted. Looking for obs.lib:"
           Get-ChildItem -Recurse -Filter "obs.lib" obs-bin | Select-Object FullName
 
-      # ----------------------------------------------------------------
-      # 4. Configure CMake
-      # ----------------------------------------------------------------
       - name: Configure CMake
         shell: pwsh
         run: |
@@ -65,15 +73,9 @@ jobs:
             -DOBS_INCLUDE_DIR="$obs_include" `
             -DOBS_LIB_PATH="$obs_lib"
 
-      # ----------------------------------------------------------------
-      # 5. Build
-      # ----------------------------------------------------------------
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      # ----------------------------------------------------------------
-      # 6. Package
-      # ----------------------------------------------------------------
       - name: Package
         shell: pwsh
         run: |
@@ -84,9 +86,6 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath obs-audio-router-windows-x64.zip
           Write-Host "Package created."
 
-      # ----------------------------------------------------------------
-      # 7. Upload artifact
-      # ----------------------------------------------------------------
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,9 +93,6 @@ jobs:
           path: obs-audio-router-windows-x64.zip
           retention-days: 30
 
-      # ----------------------------------------------------------------
-      # 8. Create GitHub Release on version tags
-      # ----------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
