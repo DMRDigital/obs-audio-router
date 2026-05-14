@@ -5,17 +5,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD   11)
 
 # -------------------------------------------------------------------------
-# Find OBS
+# Find OBS headers and import lib
+# OBS_INCLUDE_DIR  — directory containing obs-module.h  (set by CI)
+# OBS_LIB_PATH     — full path to obs.lib               (set by CI)
+# libobs cmake package is tried as a fallback for local builds
 # -------------------------------------------------------------------------
-if(NOT DEFINED OBS_SOURCE_DIR)
-  # When built by GitHub Actions via obs-plugintemplate, OBS is provided
-  # via cmake package. Try both approaches.
+if(NOT DEFINED OBS_INCLUDE_DIR)
   find_package(libobs QUIET)
-endif()
-
-if(NOT libobs_FOUND AND NOT DEFINED OBS_SOURCE_DIR)
-  message(FATAL_ERROR
-    "Could not find OBS Studio. Set OBS_SOURCE_DIR or install libobs.")
+  if(NOT libobs_FOUND)
+    message(FATAL_ERROR
+      "OBS not found. Pass -DOBS_INCLUDE_DIR=/path/to/obs/include "
+      "and -DOBS_LIB_PATH=/path/to/obs.lib, or install libobs.")
+  endif()
 endif()
 
 # -------------------------------------------------------------------------
@@ -27,52 +28,54 @@ add_library(obs-audio-router MODULE
   src/audio-receiver.cpp
 )
 
-target_include_directories(obs-audio-router PRIVATE
-  src
-)
+target_include_directories(obs-audio-router PRIVATE src)
 
 if(libobs_FOUND)
   target_link_libraries(obs-audio-router PRIVATE OBS::libobs)
 else()
-  target_include_directories(obs-audio-router PRIVATE
-    "${OBS_SOURCE_DIR}/libobs"
-    "${OBS_SOURCE_DIR}/UI/obs-frontend-api"
-  )
-  target_link_directories(obs-audio-router PRIVATE
-    "${OBS_BUILD_DIR}/libobs"
-  )
-  target_link_libraries(obs-audio-router PRIVATE obs)
+  target_include_directories(obs-audio-router PRIVATE "${OBS_INCLUDE_DIR}")
+
+  if(DEFINED OBS_LIB_PATH AND NOT OBS_LIB_PATH STREQUAL "")
+    target_link_libraries(obs-audio-router PRIVATE "${OBS_LIB_PATH}")
+  else()
+    # Try to find obs.lib relative to the include dir
+    find_library(OBS_LIB NAMES obs libobs
+      HINTS "${OBS_INCLUDE_DIR}/.." "${OBS_INCLUDE_DIR}/../lib"
+            "${OBS_INCLUDE_DIR}/../../lib"
+      PATH_SUFFIXES "" lib bin)
+    if(OBS_LIB)
+      target_link_libraries(obs-audio-router PRIVATE "${OBS_LIB}")
+    else()
+      message(WARNING "obs.lib not found — plugin will resolve obs.dll at load time")
+    endif()
+  endif()
 endif()
 
-# Windows: link Winsock
+# Windows: Winsock
 if(WIN32)
   target_link_libraries(obs-audio-router PRIVATE ws2_32)
 endif()
 
 # -------------------------------------------------------------------------
-# Install paths (matches OBS plugin layout)
+# Install
 # -------------------------------------------------------------------------
 if(WIN32)
-  set(OBS_PLUGIN_DIR
-    "$ENV{ProgramFiles}/obs-studio/obs-plugins/64bit"
+  set(OBS_PLUGIN_DIR "$ENV{ProgramFiles}/obs-studio/obs-plugins/64bit"
     CACHE PATH "OBS plugins directory")
-  install(TARGETS obs-audio-router
-    LIBRARY DESTINATION "${OBS_PLUGIN_DIR}")
+  install(TARGETS obs-audio-router LIBRARY DESTINATION "${OBS_PLUGIN_DIR}")
 elseif(APPLE)
-  install(TARGETS obs-audio-router
-    LIBRARY DESTINATION
-      "$ENV{HOME}/Library/Application Support/obs-studio/plugins/obs-audio-router/bin")
+  install(TARGETS obs-audio-router LIBRARY DESTINATION
+    "$ENV{HOME}/Library/Application Support/obs-studio/plugins/obs-audio-router/bin")
 else()
-  install(TARGETS obs-audio-router
-    LIBRARY DESTINATION
-      "$ENV{HOME}/.config/obs-studio/plugins/obs-audio-router/bin/64bit")
+  install(TARGETS obs-audio-router LIBRARY DESTINATION
+    "$ENV{HOME}/.config/obs-studio/plugins/obs-audio-router/bin/64bit")
 endif()
 
 # -------------------------------------------------------------------------
-# Package for distribution (used by GitHub Actions)
+# CPack
 # -------------------------------------------------------------------------
-set(CPACK_PACKAGE_NAME            "obs-audio-router")
-set(CPACK_PACKAGE_VERSION         "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OBS plugin: route audio tracks between two PCs")
-set(CPACK_GENERATOR               "ZIP")
+set(CPACK_PACKAGE_NAME "obs-audio-router")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OBS plugin: route audio between two PCs")
+set(CPACK_GENERATOR "ZIP")
 include(CPack)
