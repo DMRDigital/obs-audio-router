@@ -1,0 +1,99 @@
+name: Build obs-audio-router
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:   # lets you trigger a build from the GitHub UI
+
+jobs:
+  build-windows:
+    name: Windows x64
+    runs-on: windows-2022
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Checkout your plugin source
+      # ----------------------------------------------------------------
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------
+      # 2. Download OBS Studio headers + import libs
+      #    obs-studio publishes a "dev" zip with everything CMake needs.
+      # ----------------------------------------------------------------
+      - name: Download OBS development files
+        shell: pwsh
+        run: |
+          $version = "30.1.2"
+          $url = "https://github.com/obsproject/obs-studio/releases/download/${version}/obs-studio-${version}-windows-x64.zip"
+          Write-Host "Downloading OBS $version..."
+          Invoke-WebRequest -Uri $url -OutFile obs.zip
+          Expand-Archive obs.zip -DestinationPath obs-studio
+          Write-Host "OBS extracted."
+
+      # ----------------------------------------------------------------
+      # 3. Configure with CMake (point at the extracted OBS)
+      # ----------------------------------------------------------------
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          # Find where CMake config landed inside the extracted zip
+          $cmake_dir = Get-ChildItem -Recurse -Filter "libobsConfig.cmake" `
+                         obs-studio | Select-Object -First 1 | Split-Path
+          Write-Host "libobs cmake dir: $cmake_dir"
+
+          cmake -B build -S . `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -Dlibobs_DIR="$cmake_dir"
+
+      # ----------------------------------------------------------------
+      # 4. Build
+      # ----------------------------------------------------------------
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # ----------------------------------------------------------------
+      # 5. Collect the DLL into a distributable folder
+      # ----------------------------------------------------------------
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\obs-plugins\64bit | Out-Null
+          New-Item -ItemType Directory -Force -Path dist\data\obs-plugins\obs-audio-router | Out-Null
+
+          Copy-Item build\Release\obs-audio-router.dll `
+                    dist\obs-plugins\64bit\
+
+          # Create a minimal locale file so OBS doesn't complain
+          Set-Content dist\data\obs-plugins\obs-audio-router\en-US.ini `
+            "# obs-audio-router locale`n"
+
+          # Zip it up
+          Compress-Archive -Path dist\* `
+            -DestinationPath obs-audio-router-windows-x64.zip
+
+          Write-Host "Package created: obs-audio-router-windows-x64.zip"
+
+      # ----------------------------------------------------------------
+      # 6. Upload as a workflow artifact (always, every build)
+      # ----------------------------------------------------------------
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-audio-router-windows-x64
+          path: obs-audio-router-windows-x64.zip
+          retention-days: 30
+
+      # ----------------------------------------------------------------
+      # 7. On a version tag push, also create a GitHub Release
+      # ----------------------------------------------------------------
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: obs-audio-router-windows-x64.zip
+          generate_release_notes: true
