@@ -6,7 +6,7 @@ on:
     tags:     [ 'v*' ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:   # lets you trigger a build from the GitHub UI
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -15,52 +15,47 @@ jobs:
 
     steps:
       # ----------------------------------------------------------------
-      # 1. Checkout your plugin source
+      # 1. Checkout plugin source
       # ----------------------------------------------------------------
       - name: Checkout plugin
         uses: actions/checkout@v4
 
       # ----------------------------------------------------------------
-      # 2. Download OBS Studio headers + import libs
-      #    obs-studio publishes a "dev" zip with everything CMake needs.
+      # 2. Download OBS Studio Windows zip (contains headers + obs.lib)
       # ----------------------------------------------------------------
       - name: Download OBS development files
         shell: pwsh
         run: |
           $version = "32.1.2"
           $url = "https://github.com/obsproject/obs-studio/releases/download/${version}/OBS-Studio-${version}-Windows-x64.zip"
-          Write-Host "Downloading OBS $version from $url ..."
+          Write-Host "Downloading OBS $version ..."
           Invoke-WebRequest -Uri $url -OutFile obs.zip
           Expand-Archive obs.zip -DestinationPath obs-studio
-          Write-Host "OBS extracted. Contents:"
-          Get-ChildItem obs-studio -Recurse -Filter "*.cmake" | Select-Object FullName
+          Write-Host "Extracted. Listing all files:"
+          Get-ChildItem obs-studio -Recurse | Select-Object FullName
 
       # ----------------------------------------------------------------
-      # 3. Configure with CMake (point at the extracted OBS)
+      # 3. Configure CMake — find headers and obs.lib from extracted zip
       # ----------------------------------------------------------------
       - name: Configure CMake
         shell: pwsh
         run: |
-          # OBS 32.x ships cmake configs under cmake/libobs/
-          $cmake_file = Get-ChildItem -Recurse -Filter "libobsConfig.cmake" obs-studio `
-                        | Select-Object -First 1
-          if (-not $cmake_file) {
-            Write-Error "Could not find libobsConfig.cmake inside extracted OBS zip"
-            exit 1
-          }
-          $cmake_dir = $cmake_file.DirectoryName
-          Write-Host "libobs cmake dir: $cmake_dir"
+          # Find obs-module.h — its parent is our include root
+          $h = Get-ChildItem -Recurse -Filter "obs-module.h" obs-studio | Select-Object -First 1
+          if (-not $h) { Write-Error "obs-module.h not found in OBS zip"; exit 1 }
+          $obs_include = $h.DirectoryName
+          Write-Host "Include dir: $obs_include"
 
-          # Also find the OBS include root (contains obs-module.h)
-          $obs_include = Get-ChildItem -Recurse -Filter "obs-module.h" obs-studio `
-                         | Select-Object -First 1 | Split-Path
-          Write-Host "OBS include dir: $obs_include"
+          # Find obs.lib
+          $lib = Get-ChildItem -Recurse -Filter "obs.lib" obs-studio | Select-Object -First 1
+          $obs_lib = if ($lib) { $lib.FullName } else { "" }
+          Write-Host "obs.lib: $obs_lib"
 
           cmake -B build -S . `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -Dlibobs_DIR="$cmake_dir" `
-            -DOBS_INCLUDE_DIR="$obs_include"
+            -DOBS_INCLUDE_DIR="$obs_include" `
+            -DOBS_LIB_PATH="$obs_lib"
 
       # ----------------------------------------------------------------
       # 4. Build
@@ -69,29 +64,20 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       # ----------------------------------------------------------------
-      # 5. Collect the DLL into a distributable folder
+      # 5. Package the DLL
       # ----------------------------------------------------------------
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist\obs-plugins\64bit | Out-Null
           New-Item -ItemType Directory -Force -Path dist\data\obs-plugins\obs-audio-router | Out-Null
-
-          Copy-Item build\Release\obs-audio-router.dll `
-                    dist\obs-plugins\64bit\
-
-          # Create a minimal locale file so OBS doesn't complain
-          Set-Content dist\data\obs-plugins\obs-audio-router\en-US.ini `
-            "# obs-audio-router locale`n"
-
-          # Zip it up
-          Compress-Archive -Path dist\* `
-            -DestinationPath obs-audio-router-windows-x64.zip
-
-          Write-Host "Package created: obs-audio-router-windows-x64.zip"
+          Copy-Item build\Release\obs-audio-router.dll dist\obs-plugins\64bit\
+          Set-Content dist\data\obs-plugins\obs-audio-router\en-US.ini "# obs-audio-router locale`n"
+          Compress-Archive -Path dist\* -DestinationPath obs-audio-router-windows-x64.zip
+          Write-Host "Package created."
 
       # ----------------------------------------------------------------
-      # 6. Upload as a workflow artifact (always, every build)
+      # 6. Upload artifact
       # ----------------------------------------------------------------
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -101,7 +87,7 @@ jobs:
           retention-days: 30
 
       # ----------------------------------------------------------------
-      # 7. On a version tag push, also create a GitHub Release
+      # 7. Create GitHub Release on version tags
       # ----------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
